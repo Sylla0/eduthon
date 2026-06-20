@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>태양 고도 및 에너지 MBL 시뮬레이터</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: 'Malgun Gothic', sans-serif; background-color: #f4f6f9; margin: 0; padding: 20px; color: #333; }
+        .container { max-width: 1000px; margin: 0 auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+        h1 { text-align: center; color: #2c3e50; margin-bottom: 30px; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 25px; }
+        .control-panel, .visual-panel, .data-panel, .chart-panel { background: #fafafa; padding: 20px; border-radius: 8px; border: 1px solid #e0e0e0; }
+        .slider-container { margin: 20px 0; text-align: center; }
+        input[type=range] { width: 80%; height: 8px; border-radius: 5px; }
+        .angle-display { font-size: 24px; font-weight: bold; color: #e74c3c; margin-top: 10px; }
+        .canvas-container { display: flex; justify-content: center; align-items: center; height: 200px; background: #222; border-radius: 6px; position: relative; overflow: hidden; }
+        .beam { position: absolute; top: 0; width: 40px; height: 100%; background: linear-gradient(to bottom, rgba(255,242,0,0.8), rgba(255,242,0,0.2)); transform-origin: top center; }
+        .plate { width: 150px; height: 10px; background: #7f8c8d; position: absolute; bottom: 30px; transition: transform 0.1s ease; border-radius: 4px; }
+        .light-spot { position: absolute; bottom: 35px; height: 6px; background: rgba(255, 255, 0, 0.9); border-radius: 50%; filter: blur(2px); transition: all 0.1s ease; }
+        .value-box { display: flex; justify-content: space-around; gap: 12px; font-size: 18px; margin-top: 15px; flex-wrap: wrap; }
+        .value-card { background: white; padding: 10px 20px; border-radius: 6px; border: 1px solid #ddd; text-align: center; flex: 1 1 180px; }
+        .value-card span { display: block; font-size: 22px; font-weight: bold; margin-top: 5px; }
+        .btn { display: block; width: 100%; padding: 10px; background: #3498db; color: white; border: none; border-radius: 5px; font-size: 16px; cursor: pointer; margin-top: 15px; }
+        .btn:hover { background: #2980b9; }
+        .btn:disabled { background: #95a5a6; cursor: not-allowed; }
+        .status-message { min-height: 22px; margin-top: 10px; font-size: 14px; color: #555; text-align: center; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>☀️ 태양 고도별 빛 에너지 시뮬레이터 (MBL 가상실험)</h1>
+    
+    <div class="grid">
+        <div class="control-panel">
+            <h3>1. 가상 자이로 센서 제어</h3>
+            <p>슬라이더를 움직여 지표면 판의 고도(각도)를 변경해 보세요.</p>
+             <div class="slider-container">
+                 <input type="range" id="angleSlider" min="20" max="90" value="90" step="5">
+                 <div class="angle-display"><span id="angleValue">90</span>° (태양 고도)</div>
+             </div>
+             <button class="btn" id="recordBtn">현재 각도 데이터 기록하기 (MBL 전송)</button>
+             <div class="status-message" id="statusMessage" aria-live="polite"></div>
+         </div>
+
+        <div class="visual-panel">
+            <h3>2. 빛이 도달하는 면적 관찰</h3>
+            <div class="canvas-container">
+                <div class="beam"></div>
+                <div class="plate" id="simPlate"></div>
+                <div class="light-spot" id="simSpot"></div>
+            </div>
+        </div>
+
+        <div class="data-panel">
+            <h3>3. 실시간 센서 값</h3>
+            <div class="value-box">
+                <div class="value-card" style="border-top: 4px solid #f1c40f;">
+                    조도 센서
+                    <span id="luxVal" style="color: #f39c12;">1500 lux</span>
+                </div>
+                <div class="value-card" style="border-top: 4px solid #e74c3c;">
+                    온도 상승량
+                    <span id="tempVal" style="color: #c0392b;">+5.0 ℃</span>
+                </div>
+                <div class="value-card" style="border-top: 4px solid #3498db;">
+                    빛이 닿는 면적<br><small>(90° 기준 10.0 cm²)</small>
+                    <span id="areaVal" style="color: #2980b9;">10.0 cm²</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="chart-panel">
+            <h3>4. 고도-에너지 변환 누적 그래프</h3>
+            <canvas id="mblChart" height="180"></canvas>
+        </div>
+    </div>
+</div>
+
+<script>
+    // DOM 요소 링크
+    const slider = document.getElementById('angleSlider');
+    const angleValue = document.getElementById('angleValue');
+    const simPlate = document.getElementById('simPlate');
+    const simSpot = document.getElementById('simSpot');
+    const luxVal = document.getElementById('luxVal');
+    const tempVal = document.getElementById('tempVal');
+    const areaVal = document.getElementById('areaVal');
+    const recordBtn = document.getElementById('recordBtn');
+    const statusMessage = document.getElementById('statusMessage');
+
+    let mblChart = null;
+    const BASE_AREA_CM2 = 10.0;
+
+    function setStatus(message) {
+        statusMessage.innerText = message;
+    }
+
+    function getMeasurement(angle) {
+        const numericAngle = Number(angle);
+        const rad = numericAngle * (Math.PI / 180);
+        const factor = Math.sin(rad);
+
+        return {
+            angle: numericAngle,
+            label: `${numericAngle}°`,
+            lux: Math.round(1500 * factor),
+            temp: parseFloat((5.0 * factor).toFixed(1)),
+            areaCm2: BASE_AREA_CM2 / factor,
+            factor
+        };
+    }
+
+    // 과학적 수학 모델 기반 물리 데이터 계산 공식
+    function updatePhysics(angle) {
+        const measurement = getMeasurement(angle);
+        const factor = measurement.factor;
+        
+        // 2. 시각화 업데이트 (판의 회전 및 빛 면적 확대)
+        // 자이로 센서 기준: 90도는 수평, 각도가 작아질수록 기울어짐
+        const rotateAngle = 90 - measurement.angle;
+        simPlate.style.transform = `rotate(${rotateAngle}deg)`;
+        
+        // 빛 면적 계산 (고도가 낮을수록 면적이 타원형으로 넓어짐)
+        const spotWidth = 40 / factor;
+        simSpot.style.width = `${spotWidth}px`;
+        simSpot.style.transform = `rotate(${rotateAngle}deg)`;
+
+        // 3. 텍스트 수치 업데이트
+        luxVal.innerText = `${measurement.lux} lux`;
+        tempVal.innerText = `+${measurement.temp.toFixed(1)} ℃`;
+        areaVal.innerText = `${measurement.areaCm2.toFixed(1)} cm²`;
+    }
+
+    // Chart.js 초기화 설정
+    const chartCanvas = document.getElementById('mblChart');
+    if (window.Chart && chartCanvas) {
+        const ctx = chartCanvas.getContext('2d');
+        mblChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [], // 각도 데이터 기록 공간
+                datasets: [
+                    {
+                        label: '조도 (lux) [좌측 축]',
+                        data: [],
+                        borderColor: '#f39c12',
+                        backgroundColor: 'rgba(243, 156, 18, 0.1)',
+                        yAxisID: 'yLux',
+                        tension: 0.2
+                    },
+                    {
+                        label: '온도 상승량 (℃) [우측 축]',
+                        data: [],
+                        borderColor: '#c0392b',
+                        backgroundColor: 'rgba(192, 57, 43, 0.1)',
+                        yAxisID: 'yTemp',
+                        tension: 0.2
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    x: { title: { display: true, text: '태양 고도 (각도 °)' } },
+                    yLux: { type: 'linear', position: 'left', min: 0, max: 1600, title: { display: true, text: '조도 (lux)' } },
+                    yTemp: { type: 'linear', position: 'right', min: 0, max: 6, title: { display: true, text: '온도 상승량 (℃)' }, grid: { drawOnChartArea: false } }
+                }
+            }
+        });
+        setStatus('각도를 선택한 뒤 기록 버튼을 눌러 그래프에 추가하세요.');
+    } else {
+        chartCanvas.replaceWith(Object.assign(document.createElement('p'), {
+            className: 'status-message',
+            innerText: '그래프 라이브러리를 불러오지 못해 기록 기능이 비활성화되었습니다.'
+        }));
+        recordBtn.disabled = true;
+        setStatus('시뮬레이션은 계속 사용할 수 있지만 그래프 기록은 사용할 수 없습니다.');
+    }
+
+    // 슬라이더 이벤트 리스너
+    slider.addEventListener('input', (e) => {
+        const angle = e.target.value;
+        angleValue.innerText = angle;
+        updatePhysics(angle);
+    });
+
+    // 데이터 기록 버튼 이벤트 리스너 (누적 차트화)
+    recordBtn.addEventListener('click', () => {
+        if (!mblChart) {
+            setStatus('그래프 기록 기능을 사용할 수 없습니다.');
+            return;
+        }
+
+        const measurement = getMeasurement(slider.value);
+        const existingIndex = mblChart.data.labels.indexOf(measurement.label);
+        const list = mblChart.data.labels.map((label, index) => ({
+            label,
+            lux: mblChart.data.datasets[0].data[index],
+            temp: mblChart.data.datasets[1].data[index]
+        }));
+
+        if (existingIndex >= 0) {
+            list[existingIndex] = {
+                label: measurement.label,
+                lux: measurement.lux,
+                temp: measurement.temp
+            };
+            setStatus(`${measurement.label} 데이터가 최신 값으로 갱신되었습니다.`);
+        } else {
+            list.push({
+                label: measurement.label,
+                lux: measurement.lux,
+                temp: measurement.temp
+            });
+            setStatus(`${measurement.label} 데이터가 그래프에 기록되었습니다.`);
+        }
+
+        // 각도 오름차순 정렬 (20도 -> 90도 순 정렬)
+        list.sort((a, b) => parseInt(a.label, 10) - parseInt(b.label, 10));
+
+        // 차트 데이터 갱신
+        mblChart.data.labels = list.map(item => item.label);
+        mblChart.data.datasets[0].data = list.map(item => item.lux);
+        mblChart.data.datasets[1].data = list.map(item => item.temp);
+
+        mblChart.update();
+    });
+
+    // 초기 상태 실행
+    updatePhysics(90);
+</script>
+
+</body>
+</html>
